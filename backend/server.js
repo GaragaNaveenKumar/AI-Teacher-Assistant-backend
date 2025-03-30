@@ -3,9 +3,12 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const cors = require('cors');
-const pdfParse = require('pdf-parse');
 const fs = require('fs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Tesseract = require('tesseract.js');
+const Pdf2Pic = require('pdf2pic');
+
+
 
 const app = express();
 app.use(cors());
@@ -29,12 +32,41 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 async function getFeedback(text) {
   try {
     const model = genAI.getGenerativeModel({ model: 'models/gemini-1.5-pro-002' });
-    const result = await model.generateContent(" Assume you are teacher Please review this text and provide feedback and grade in range of 5:\n\n"+text);
+    const result = await model.generateContent(
+      "Assume you are a teacher. Review this text and provide feedback and a grade (1-5):\n\n" + text
+    );
     console.log(result);
     return result.response.text();
   } catch (error) {
     console.error('AI Error:', error);
     return 'Error generating feedback';
+  }
+}
+
+// Convert PDF to Image and Extract Text with Tesseract.js
+async function extractTextFromPDF(pdfPath) {
+  const outputDir = './converted/';
+
+  // Correct instance creation (use "new Pdf2Pic()")
+  const pdfImage = new Pdf2Pic({
+    density: 300,
+    savePath: outputDir,
+    format: 'png',
+    width: 1240,
+    height: 1754,
+  });
+
+  try {
+    // Convert first page of PDF to image
+    const imageConversion = await pdfImage.convert(pdfPath, 1);
+    const imagePath = imageConversion.path; // Correct path extraction
+
+    // Extract text using Tesseract.js
+    const extractedText = await Tesseract.recognize(imagePath, 'eng');
+    return extractedText.data.text;
+  } catch (error) {
+    console.error('OCR Error:', error);
+    return 'Error extracting text from PDF';
   }
 }
 
@@ -54,30 +86,19 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     return res.status(400).json({ message: 'No file uploaded' });
   }
 
-  const pdfBuffer = fs.readFileSync(req.file.path);
-  pdfParse(pdfBuffer)
-    .then(async (data) => {
-      const extractedText = data.text;
-      
-      const feedback = await getFeedback(extractedText);
+  const extractedText = await extractTextFromPDF(req.file.path);
+  const feedback = await getFeedback(extractedText);
 
-      // fs.unlink('./uploads/'+req.file.path)
+  // Save submission details
+  const submission = {
+    id: Date.now(),
+    filename: req.file.filename,
+    feedback,
+    teacherComments: '',
+  };
+  saveSubmission(submission);
 
-      // Save submission details
-      const submission = {
-        id: Date.now(),
-        filename: req.file.filename,
-        feedback,
-        teacherComments: '',
-      };
-      saveSubmission(submission);
-
-      res.json({ message: 'File Uploaded Successfully', feedback });
-    })
-    .catch((err) => {
-      console.error('PDF Parsing Error:', err);
-      res.status(500).json({ message: 'Error extracting text from PDF' });
-    });
+  res.json({ message: 'File Uploaded Successfully', feedback });
 });
 
 // Fetch all submissions for Teacher Dashboard
