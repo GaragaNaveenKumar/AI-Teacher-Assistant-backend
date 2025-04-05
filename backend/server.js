@@ -3,12 +3,12 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const cors = require('cors');
-const fs = require('fs');
+const fs = require('fs').promises;
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Tesseract = require('tesseract.js');
-const Pdf2Pic = require('pdf2pic');
-
-
+const pdfPoppler = require('pdf-poppler');
+const axios = require('axios');
+const sharp = require('sharp');
 
 const app = express();
 app.use(cors());
@@ -31,97 +31,140 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Function to get AI feedback
 async function getFeedback(text) {
   try {
-    const model = genAI.getGenerativeModel({ model: 'models/gemini-1.5-pro-002' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
     const result = await model.generateContent(
       "Assume you are a teacher. Review this text and provide feedback and a grade (1-5):\n\n" + text
     );
-    console.log(result);
     return result.response.text();
   } catch (error) {
     console.error('AI Error:', error);
-    return 'Error generating feedback';
+    throw new Error('Error generating feedback');
   }
 }
 
-// Convert PDF to Image and Extract Text with Tesseract.js
+async function preprocessImage(imagePath) {
+  const tempPath = `${imagePath}.temp.png`;
+  await sharp(imagePath)
+    .grayscale()
+    .linear(1.5)
+    .normalize()
+    .toFile(tempPath);
+
+  await fs.rename(tempPath, imagePath);
+  return imagePath;
+}
+
 async function extractTextFromPDF(pdfPath) {
-  const outputDir = './converted/';
-
-  // Correct instance creation (use "new Pdf2Pic()")
-  const pdfImage = new Pdf2Pic({
-    density: 300,
-    savePath: outputDir,
-    format: 'png',
-    width: 1240,
-    height: 1754,
-  });
-
+  const outputDir = './output';
   try {
-    // Convert first page of PDF to image
-    const imageConversion = await pdfImage.convert(pdfPath, 1);
-    const imagePath = imageConversion.path; // Correct path extraction
+    await fs.mkdir(outputDir, { recursive: true });
 
-    // Extract text using Tesseract.js
-    const extractedText = await Tesseract.recognize(imagePath, 'eng');
-    return extractedText.data.text;
+    await pdfPoppler.convert(pdfPath, {
+      format: 'png',
+      out_dir: outputDir,
+      out_prefix: 'page',
+      page: null,
+    });
+
+    const extractedTexts = [];
+    const files = await fs.readdir(outputDir);
+    for (const file of files) {
+      const imagePath = path.join(outputDir, file);
+      await preprocessImage(imagePath);
+
+      console.log(`Processing ${file}...`);
+      const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
+      extractedTexts.push(`${file}: ${text}`);
+    }
+
+    const fullText = extractedTexts.join('\n\n');
+    console.log('Extracted Text:', fullText);
+    return fullText;
   } catch (error) {
-    console.error('OCR Error:', error);
-    return 'Error extracting text from PDF';
+    console.error('PDF Extraction Error:', error);
+    throw error;
+  } finally {
+    await fs.rm(outputDir, { recursive: true, force: true }).catch((err) =>
+      console.error('Cleanup Error:', err)
+    );
   }
 }
 
-// Save submission data to a file
-function saveSubmission(submission) {
+async function saveSubmission(submission) {
   let submissions = [];
-  if (fs.existsSync(SUBMISSIONS_FILE)) {
-    submissions = JSON.parse(fs.readFileSync(SUBMISSIONS_FILE));
+  try {
+    const fileExists = await fs.stat(SUBMISSIONS_FILE).catch(() => false);
+    if (fileExists) {
+      const fileContent = await fs.readFile(SUBMISSIONS_FILE, 'utf8');
+      if (fileContent.trim()) { // Check if content is non-empty
+        submissions = JSON.parse(fileContent);
+      }
+    }
+    submissions.push(submission);
+    await fs.writeFile(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
+  } catch (error) {
+    console.error('Save Submission Error:', error);
+    throw error;
   }
-  submissions.push(submission);
-  fs.writeFileSync(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
 }
 
-// Upload Route
 app.post('/upload', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: 'No file uploaded' });
   }
 
-  const extractedText = await extractTextFromPDF(req.file.path);
-  const feedback = await getFeedback(extractedText);
+  try {
+    const extractedText = await extractTextFromPDF(req.file.path);
+    if (!extractedText) {
+      return res.status(500).json({ message: 'Failed to extract text from PDF' });
+    }
 
-  // Save submission details
-  const submission = {
-    id: Date.now(),
-    filename: req.file.filename,
-    feedback,
-    teacherComments: '',
-  };
-  saveSubmission(submission);
+    const feedback = await getFeedback(extractedText);
 
-  res.json({ message: 'File Uploaded Successfully', feedback });
-});
+    const submission = {
+      id: Date.now(),
+      filename: req.file.filename,
+      feedback,
+      teacherComments: '',
+    };
+    await saveSubmission(submission);
 
-// Fetch all submissions for Teacher Dashboard
-app.get('/submissions', (req, res) => {
-  if (fs.existsSync(SUBMISSIONS_FILE)) {
-    res.json(JSON.parse(fs.readFileSync(SUBMISSIONS_FILE)));
-  } else {
-    res.json([]);
+    res.json({ message: 'File Uploaded Successfully', feedback });
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  } finally {
+    await fs.unlink(req.file.path).catch((err) => console.error('File Cleanup Error:', err));
   }
 });
 
-// Update teacher comments on a submission
-app.post('/update-comment', (req, res) => {
-  const { id, teacherComments } = req.body;
-  let submissions = JSON.parse(fs.readFileSync(SUBMISSIONS_FILE));
-
-  submissions = submissions.map((submission) =>
-    submission.id === id ? { ...submission, teacherComments } : submission
-  );
-
-  fs.writeFileSync(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
-  res.json({ message: 'Comment Updated Successfully' });
+app.get('/submissions', async (req, res) => {
+  try {
+    const fileExists = await fs.stat(SUBMISSIONS_FILE).catch(() => false);
+    if (fileExists) {
+      const submissions = JSON.parse(await fs.readFile(SUBMISSIONS_FILE, 'utf8'));
+      res.json(submissions);
+    } else {
+      res.json([]);
+    }
+  } catch (error) {
+    console.error('Submissions Fetch Error:', error);
+    res.status(500).json({ message: 'Error fetching submissions' });
+  }
 });
 
-// Start Server
+app.post('/update-comment', async (req, res) => {
+  const { id, teacherComments } = req.body;
+  try {
+    let submissions = JSON.parse(await fs.readFile(SUBMISSIONS_FILE, 'utf8'));
+    submissions = submissions.map((submission) =>
+      submission.id === id ? { ...submission, teacherComments } : submission
+    );
+    await fs.writeFile(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
+    res.json({ message: 'Comment Updated Successfully' });
+  } catch (error) {
+    console.error('Update Comment Error:', error);
+    res.status(500).json({ message: 'Error updating comment' });
+  }
+});
+
 app.listen(5000, () => console.log('Server running on port 5000'));
