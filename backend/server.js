@@ -10,13 +10,14 @@ const pdfPoppler = require('pdf-poppler');
 const axios = require('axios');
 const sharp = require('sharp');
 
+console.log('Platform:', process.platform); // Debug OS
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const SUBMISSIONS_FILE = './submissions.json';
 
-// Configure Multer for PDF uploads
 const storage = multer.diskStorage({
   destination: './uploads/',
   filename: (req, file, cb) => {
@@ -25,10 +26,16 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Initialize Gemini AI API
+console.log('Loading dependencies...');
+require('pdf-poppler');
+console.log('pdf-poppler loaded');
+require('tesseract.js');
+console.log('tesseract.js loaded');
+require('sharp');
+console.log('sharp loaded');
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Function to get AI feedback
 async function getFeedback(text) {
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
@@ -49,7 +56,6 @@ async function preprocessImage(imagePath) {
     .linear(1.5)
     .normalize()
     .toFile(tempPath);
-
   await fs.rename(tempPath, imagePath);
   return imagePath;
 }
@@ -58,28 +64,22 @@ async function extractTextFromPDF(pdfPath) {
   const outputDir = './output';
   try {
     await fs.mkdir(outputDir, { recursive: true });
-
     await pdfPoppler.convert(pdfPath, {
       format: 'png',
       out_dir: outputDir,
       out_prefix: 'page',
       page: null,
     });
-
     const extractedTexts = [];
     const files = await fs.readdir(outputDir);
     for (const file of files) {
       const imagePath = path.join(outputDir, file);
       await preprocessImage(imagePath);
-
       console.log(`Processing ${file}...`);
       const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
       extractedTexts.push(`${file}: ${text}`);
     }
-
-    const fullText = extractedTexts.join('\n\n');
-    // console.log('Extracted Text:', fullText);
-    return fullText;
+    return extractedTexts.join('\n\n');
   } catch (error) {
     console.error('PDF Extraction Error:', error);
     throw error;
@@ -96,7 +96,7 @@ async function saveSubmission(submission) {
     const fileExists = await fs.stat(SUBMISSIONS_FILE).catch(() => false);
     if (fileExists) {
       const fileContent = await fs.readFile(SUBMISSIONS_FILE, 'utf8');
-      if (fileContent.trim()) { // Check if content is non-empty
+      if (fileContent.trim()) {
         submissions = JSON.parse(fileContent);
       }
     }
@@ -112,15 +112,12 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: 'No file uploaded' });
   }
-
   try {
     const extractedText = await extractTextFromPDF(req.file.path);
     if (!extractedText) {
       return res.status(500).json({ message: 'Failed to extract text from PDF' });
     }
-
     const feedback = await getFeedback(extractedText);
-
     const submission = {
       id: Date.now(),
       filename: req.file.filename,
@@ -128,7 +125,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       teacherComments: '',
     };
     await saveSubmission(submission);
-
     res.json({ message: 'File Uploaded Successfully', feedback });
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
@@ -167,4 +163,5 @@ app.post('/update-comment', async (req, res) => {
   }
 });
 
-app.listen(5000, () => console.log('Server running on port 5000'));
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
