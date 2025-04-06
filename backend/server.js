@@ -78,7 +78,7 @@ async function extractTextFromPDF(pdfPath) {
     }
 
     const fullText = extractedTexts.join('\n\n');
-    console.log('Extracted Text:', fullText);
+    // console.log('Extracted Text:', fullText);
     return fullText;
   } catch (error) {
     console.error('PDF Extraction Error:', error);
