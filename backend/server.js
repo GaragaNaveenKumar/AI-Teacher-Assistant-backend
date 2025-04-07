@@ -75,7 +75,7 @@ async function extractTextFromPDF(pdfPath) {
     for (const file of files) {
       const imagePath = path.join(outputDir, file);
       await preprocessImage(imagePath);
-      console.log(`Processing ${file}...`);
+      // console.log(`Processing ${file}...`);
       const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
       extractedTexts.push(`${file}: ${text}`);
     }
@@ -90,23 +90,23 @@ async function extractTextFromPDF(pdfPath) {
   }
 }
 
-async function saveSubmission(submission) {
-  let submissions = [];
-  try {
-    const fileExists = await fs.stat(SUBMISSIONS_FILE).catch(() => false);
-    if (fileExists) {
-      const fileContent = await fs.readFile(SUBMISSIONS_FILE, 'utf8');
-      if (fileContent.trim()) {
-        submissions = JSON.parse(fileContent);
-      }
-    }
-    submissions.push(submission);
-    await fs.writeFile(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
-  } catch (error) {
-    console.error('Save Submission Error:', error);
-    throw error;
-  }
-}
+// async function saveSubmission(submission) {
+//   let submissions = [];
+//   try {
+//     const fileExists = await fs.stat(SUBMISSIONS_FILE).catch(() => false);
+//     if (fileExists) {
+//       const fileContent = await fs.readFile(SUBMISSIONS_FILE, 'utf8');
+//       if (fileContent.trim()) {
+//         submissions = JSON.parse(fileContent);
+//       }
+//     }
+//     submissions.push(submission);
+//     await fs.writeFile(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
+//   } catch (error) {
+//     console.error('Save Submission Error:', error);
+//     throw error;
+//   }
+// }
 
 app.post('/upload', upload.single('file'), async (req, res) => {
   if (!req.file) {
@@ -118,13 +118,13 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       return res.status(500).json({ message: 'Failed to extract text from PDF' });
     }
     const feedback = await getFeedback(extractedText);
-    const submission = {
-      id: Date.now(),
-      filename: req.file.filename,
-      feedback,
-      teacherComments: '',
-    };
-    await saveSubmission(submission);
+    // const submission = {
+    //   id: Date.now(),
+    //   filename: req.file.filename,
+    //   feedback,
+    //   teacherComments: '',
+    // };
+    // await saveSubmission(submission);
     res.json({ message: 'File Uploaded Successfully', feedback });
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
@@ -133,35 +133,35 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-app.get('/submissions', async (req, res) => {
-  try {
-    const fileExists = await fs.stat(SUBMISSIONS_FILE).catch(() => false);
-    if (fileExists) {
-      const submissions = JSON.parse(await fs.readFile(SUBMISSIONS_FILE, 'utf8'));
-      res.json(submissions);
-    } else {
-      res.json([]);
-    }
-  } catch (error) {
-    console.error('Submissions Fetch Error:', error);
-    res.status(500).json({ message: 'Error fetching submissions' });
-  }
-});
+// app.get('/submissions', async (req, res) => {
+//   try {
+//     const fileExists = await fs.stat(SUBMISSIONS_FILE).catch(() => false);
+//     if (fileExists) {
+//       const submissions = JSON.parse(await fs.readFile(SUBMISSIONS_FILE, 'utf8'));
+//       res.json(submissions);
+//     } else {
+//       res.json([]);
+//     }
+//   } catch (error) {
+//     console.error('Submissions Fetch Error:', error);
+//     res.status(500).json({ message: 'Error fetching submissions' });
+//   }
+// });
 
-app.post('/update-comment', async (req, res) => {
-  const { id, teacherComments } = req.body;
-  try {
-    let submissions = JSON.parse(await fs.readFile(SUBMISSIONS_FILE, 'utf8'));
-    submissions = submissions.map((submission) =>
-      submission.id === id ? { ...submission, teacherComments } : submission
-    );
-    await fs.writeFile(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
-    res.json({ message: 'Comment Updated Successfully' });
-  } catch (error) {
-    console.error('Update Comment Error:', error);
-    res.status(500).json({ message: 'Error updating comment' });
-  }
-});
+// app.post('/update-comment', async (req, res) => {
+//   const { id, teacherComments } = req.body;
+//   try {
+//     let submissions = JSON.parse(await fs.readFile(SUBMISSIONS_FILE, 'utf8'));
+//     submissions = submissions.map((submission) =>
+//       submission.id === id ? { ...submission, teacherComments } : submission
+//     );
+//     await fs.writeFile(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2));
+//     res.json({ message: 'Comment Updated Successfully' });
+//   } catch (error) {
+//     console.error('Update Comment Error:', error);
+//     res.status(500).json({ message: 'Error updating comment' });
+//   }
+// });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
